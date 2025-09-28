@@ -1,6 +1,6 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from database.base import Base  # Изменено импорт Base
 from database.cloud_config import POSTGRES_CONFIG
 import ssl
 
@@ -29,11 +29,12 @@ engine = create_engine(
 # Создаем сессию для работы с БД
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Базовый класс для моделей
-Base = declarative_base()
-
 def create_tables():
     """Создает все таблицы в базе данных"""
+    # Импортируем все модели чтобы они зарегистрировались у Base
+    from database import models
+    from database import rewards_models
+    
     Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -43,3 +44,4 @@ def get_db():
         yield db
     finally:
         db.close()
+

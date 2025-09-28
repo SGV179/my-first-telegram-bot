@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, BigInteger, Boolean, DateTime, Text, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from database.connections import Base
+from database.base import Base  # Изменено с connections на base
 
 class User(Base):
     """Модель пользователя"""
@@ -55,7 +55,6 @@ class ScheduledPost(Base):
     is_published = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
 
-# НОВЫЕ ТАБЛИЦЫ ДЛЯ АНАЛИТИКИ
 class UserEvent(Base):
     """События пользователей для аналитики"""
     __tablename__ = 'user_events'
