@@ -9,7 +9,7 @@ from aiogram.utils import executor
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Reward, User, Transaction
+from models import Base, Reward
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -39,44 +39,6 @@ class AdminStates(StatesGroup):
     waiting_for_reward_edit = State()
     waiting_for_reward_edit_points = State()
 
-# Вспомогательные функции
-def get_or_create_user(user_id, username=None, first_name=None, last_name=None):
-    """Получает пользователя из базы или создает нового"""
-    user = db_session.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        user = User(
-            user_id=user_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name
-        )
-        db_session.add(user)
-        db_session.commit()
-    return user
-
-def get_user_balance(user_id):
-    """Получает баланс пользователя"""
-    user = db_session.query(User).filter(User.user_id == user_id).first()
-    return user.points if user else 0
-
-def create_transaction(user_id, reward_id, points_change, transaction_type):
-    """Создает запись о транзакции"""
-    user = db_session.query(User).filter(User.user_id == user_id).first()
-    if user:
-        transaction = Transaction(
-            user_id=user.id,
-            reward_id=reward_id,
-            points_change=points_change,
-            transaction_type=transaction_type
-        )
-        db_session.add(transaction)
-        
-        # Обновляем баланс пользователя
-        user.points += points_change
-        db_session.commit()
-        return True
-    return False
-
 # Клавиатуры
 def get_main_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -93,27 +55,21 @@ def get_admin_keyboard():
     keyboard.add(KeyboardButton('На главную'))
     return keyboard
 
-def get_rewards_keyboard(user_id):
+def get_rewards_keyboard():
     keyboard = InlineKeyboardMarkup()
     rewards = db_session.query(Reward).all()
-    user_balance = get_user_balance(user_id)
     
     # Берем только награды с загруженными файлами
     available_rewards = [r for r in rewards if r.file_id]
     
     for reward in available_rewards:
-        can_afford = user_balance >= reward.points_cost
-        status_icon = "✅" if can_afford else "❌"
-        button_text = f"{status_icon} {reward.title} - {reward.points_cost} баллов"
-        
+        button_text = f"{reward.title} - {reward.points_cost} баллов"
         if len(button_text) > 50:
-            button_text = f"{status_icon} {reward.title[:47]}..."
-        
-        callback_data = f"reward_{reward.id}" if can_afford else "not_enough_points"
+            button_text = reward.title[:47] + "..."
         
         keyboard.add(InlineKeyboardButton(
             button_text,
-            callback_data=callback_data
+            callback_data=f"reward_{reward.id}"
         ))
     return keyboard
 
@@ -144,20 +100,26 @@ def get_manage_rewards_keyboard():
     keyboard.add(InlineKeyboardButton("Назад в админку", callback_data="back_to_admin"))
     return keyboard
 
-# Очистка базы от дубликатов
+# Очистка базы от дубликатов (исправленная версия)
 def cleanup_duplicates():
     """Удаляет дубликаты наград по названию, оставляя только последнюю версию"""
     try:
+        # Получаем все награды
         all_rewards = db_session.query(Reward).all()
+        
+        # Словарь для отслеживания уникальных названий
         unique_titles = {}
         duplicates_to_delete = []
         
         for reward in all_rewards:
             if reward.title in unique_titles:
+                # Если название уже встречалось, добавляем в список на удаление
                 duplicates_to_delete.append(reward.id)
             else:
+                # Сохраняем первый экземпляр с этим названием
                 unique_titles[reward.title] = reward.id
         
+        # Удаляем дубликаты
         if duplicates_to_delete:
             for reward_id in duplicates_to_delete:
                 reward_to_delete = db_session.query(Reward).filter(Reward.id == reward_id).first()
@@ -174,18 +136,41 @@ def cleanup_duplicates():
 
 # Инициализация начальных наград
 def initialize_rewards():
+    # Сначала чистим дубликаты
     cleanup_duplicates()
     
+    # Проверяем, есть ли уже награды в базе
     existing_rewards = db_session.query(Reward).count()
     if existing_rewards == 0:
         initial_rewards = [
-            {"title": "Гайд. Как выбрать планировку квартиры?", "points_cost": 50},
-            {"title": "ТОП 10 требований покупателей квартир в премиум-классе в 2025 году", "points_cost": 30},
-            {"title": "ТОП 10 требований покупателей квартир в комфорт-классе в 2025 году", "points_cost": 30},
-            {"title": "Чек-лист. Как выбрать 1-комнатную квартиру для жизни?", "points_cost": 30},
-            {"title": "Чек-лист. Как выбрать 1-комнатную квартиру для аренды?", "points_cost": 30},
-            {"title": "Чек-лист. Как выбрать 2-комнатную квартиру для жизни?", "points_cost": 30},
-            {"title": "Чек-лист. Как выбрать 2-комнатную квартиру для аренды?", "points_cost": 30}
+            {
+                "title": "Гайд. Как выбрать планировку квартиры?",
+                "points_cost": 50
+            },
+            {
+                "title": "ТОП 10 требований покупателей квартир в премиум-классе в 2025 году",
+                "points_cost": 30
+            },
+            {
+                "title": "ТОП 10 требований покупателей квартир в комфорт-классе в 2025 году", 
+                "points_cost": 30
+            },
+            {
+                "title": "Чек-лист. Как выбрать 1-комнатную квартиру для жизни?",
+                "points_cost": 30
+            },
+            {
+                "title": "Чек-лист. Как выбрать 1-комнатную квартиру для аренды?",
+                "points_cost": 30
+            },
+            {
+                "title": "Чек-лист. Как выбрать 2-комнатную квартиру для жизни?",
+                "points_cost": 30
+            },
+            {
+                "title": "Чек-лист. Как выбрать 2-комнатную квартиру для аренды?",
+                "points_cost": 30
+            }
         ]
         
         for reward_data in initial_rewards:
@@ -203,16 +188,8 @@ def initialize_rewards():
 # Обработчики команд
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    # Создаем/получаем пользователя
-    user = get_or_create_user(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name
-    )
-    
     await message.answer(
-        f"Добро пожаловать в бот, {message.from_user.first_name}!\n\n"
+        "Добро пожаловать в бот!\n\n"
         "Здесь вы можете получать полезные материалы за баллы.",
         reply_markup=get_main_keyboard()
     )
@@ -223,33 +200,27 @@ async def cmd_main_menu(message: types.Message):
 
 @dp.message_handler(lambda message: message.text == 'Мой профиль')
 async def cmd_profile(message: types.Message):
-    user = get_or_create_user(message.from_user.id)
     await message.answer(
-        f"👤 Ваш профиль:\n\n"
-        f"Имя: {message.from_user.first_name or 'Не указано'}\n"
-        f"Username: @{message.from_user.username or 'Не указан'}\n"
-        f"Баланс: {user.points} баллов\n\n"
-        f"Используйте баллы для получения полезных материалов!"
+        "Ваш профиль:\n"
+        "Баллы: 100\n\n"
+        "Здесь будет отображаться ваше текущее количество баллов."
     )
 
 @dp.message_handler(lambda message: message.text == 'Каталог наград')
 async def cmd_rewards_catalog(message: types.Message):
     rewards = db_session.query(Reward).all()
     available_rewards = [r for r in rewards if r.file_id]
-    user_balance = get_user_balance(message.from_user.id)
     
     if not available_rewards:
         await message.answer("Пока нет доступных наград. Файлы еще не загружены.")
         return
     
-    text = f"🏆 Каталог наград (Ваш баланс: {user_balance} баллов):\n\n"
+    text = "🏆 Каталог наград:\n\n"
     for reward in available_rewards:
-        can_afford = user_balance >= reward.points_cost
-        status = "✅ Доступно" if can_afford else f"❌ Недостаточно баллов (нужно {reward.points_cost})"
-        text += f"• {reward.title} - {reward.points_cost} баллов\n  {status}\n\n"
+        text += f"• {reward.title} - {reward.points_cost} баллов\n"
     
-    text += "Выберите награду для получения:"
-    await message.answer(text, reply_markup=get_rewards_keyboard(message.from_user.id))
+    text += "\nВыберите награду для получения:"
+    await message.answer(text, reply_markup=get_rewards_keyboard())
 
 @dp.message_handler(lambda message: message.text == 'Админ панель')
 async def cmd_admin_panel(message: types.Message):
@@ -291,7 +262,6 @@ async def cmd_manage_rewards(message: types.Message):
 async def process_reward_callback(callback_query: types.CallbackQuery):
     reward_id = int(callback_query.data.split('_')[1])
     reward = db_session.query(Reward).filter(Reward.id == reward_id).first()
-    user_balance = get_user_balance(callback_query.from_user.id)
     
     if not reward:
         await callback_query.answer("Награда не найдена")
@@ -301,38 +271,16 @@ async def process_reward_callback(callback_query: types.CallbackQuery):
         await callback_query.answer("Файл для этой награды еще не загружен")
         return
     
-    # Проверяем достаточно ли баллов
-    if user_balance < reward.points_cost:
-        await callback_query.answer(f"Недостаточно баллов! Нужно {reward.points_cost}, у вас {user_balance}")
-        return
-    
     try:
-        # Списываем баллы
-        if create_transaction(
-            user_id=callback_query.from_user.id,
-            reward_id=reward.id,
-            points_change=-reward.points_cost,
-            transaction_type="purchase"
-        ):
-            await bot.send_document(
-                callback_query.from_user.id,
-                reward.file_id,
-                caption=f"🎉 Поздравляем! Вы получили: {reward.title}\n\n"
-                       f"Списано баллов: {reward.points_cost}\n"
-                       f"Остаток баллов: {get_user_balance(callback_query.from_user.id)}"
-            )
-            await callback_query.answer("Награда отправлена! Баллы списаны.")
-        else:
-            await callback_query.answer("Ошибка при списании баллов")
-            
+        await bot.send_document(
+            callback_query.from_user.id,
+            reward.file_id,
+            caption=f"🎉 Поздравляем! Вы получили: {reward.title}"
+        )
+        await callback_query.answer("Награда отправлена!")
     except Exception as e:
         await callback_query.answer("Ошибка при отправке файла")
         logging.error(f"Error sending file: {e}")
-
-@dp.callback_query_handler(lambda c: c.data == 'not_enough_points')
-async def process_not_enough_points(callback_query: types.CallbackQuery):
-    user_balance = get_user_balance(callback_query.from_user.id)
-    await callback_query.answer(f"Недостаточно баллов! Ваш баланс: {user_balance}")
 
 # Обработка управления наградами
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_reward_'))
@@ -342,17 +290,7 @@ async def process_view_reward(callback_query: types.CallbackQuery):
     
     if reward:
         status = "✅ Файл загружен" if reward.file_id else "❌ Файл отсутствует"
-        # Считаем сколько раз награду покупали
-        purchase_count = db_session.query(Transaction).filter(
-            Transaction.reward_id == reward.id,
-            Transaction.transaction_type == "purchase"
-        ).count()
-        
-        text = (f"📊 Информация о награде:\n\n"
-               f"Название: {reward.title}\n"
-               f"Цена: {reward.points_cost} баллов\n"
-               f"Статус: {status}\n"
-               f"Куплена раз: {purchase_count}")
+        text = f"📊 Информация о награде:\n\nНазвание: {reward.title}\nЦена: {reward.points_cost} баллов\nСтатус: {status}"
         await callback_query.message.answer(text)
     await callback_query.answer()
 
@@ -468,3 +406,4 @@ if __name__ == '__main__':
     # Запускаем бота
     logging.info("Bot starting...")
     executor.start_polling(dp, skip_updates=True)
+
