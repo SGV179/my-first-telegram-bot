@@ -13,6 +13,7 @@ from app.services.points_service import PointsService
 from app.services.channel_service import ChannelService
 from app.handlers.user_handlers import router as user_router
 from app.handlers.rewards_handlers import router as rewards_router
+from app.handlers.admin_handlers import router as admin_router
 from app.utils.logger import logger
 
 async def main():
@@ -42,6 +43,7 @@ async def main():
         dp.message.register(start_handler, CommandStart())
         dp.include_router(user_router)
         dp.include_router(rewards_router)
+        dp.include_router(admin_router)
 
         # Start polling
         logger.info("🚀 Bot is starting...")
@@ -101,6 +103,10 @@ async def start_handler(message: Message):
                 welcome_text += f"\n🎉 Вам начислено {subscription_result['welcome_points']} приветственных баллов!"
             elif not subscription_result['subscribed']:
                 welcome_text += f"\n\n📋 Для получения приветственных баллов подпишитесь на оба канала выше!"
+
+            # Show admin panel link for admins
+            if user.id in config.ADMIN_IDS:
+                welcome_text += f"\n\n🛠️ *Панель администратора:* /admin"
 
             await message.answer(welcome_text)
         else:
