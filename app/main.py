@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
 from aiogram.types import Message
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config.config import config
 from app.database.db_connection import db
@@ -11,12 +12,14 @@ from app.services.user_service import UserService
 from app.services.points_service import PointsService
 from app.services.channel_service import ChannelService
 from app.handlers.user_handlers import router as user_router
+from app.handlers.rewards_handlers import router as rewards_router
 from app.utils.logger import logger
 
 async def main():
-    # Initialize bot and dispatcher
+    # Initialize bot and dispatcher with memory storage for FSM
     bot = Bot(token=config.BOT_TOKEN)
-    dp = Dispatcher()
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
     try:
         # Test database connection and initialize tables
@@ -38,6 +41,7 @@ async def main():
         # Register handlers
         dp.message.register(start_handler, CommandStart())
         dp.include_router(user_router)
+        dp.include_router(rewards_router)
 
         # Start polling
         logger.info("🚀 Bot is starting...")
@@ -89,6 +93,7 @@ async def start_handler(message: Message):
 /profile - ваш профиль
 /check_subscription - проверить подписку
 /rewards - доступные награды
+/my_rewards - ваши покупки
 /help - справка по командам
             """
 

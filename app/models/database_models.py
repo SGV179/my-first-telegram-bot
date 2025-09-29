@@ -1,3 +1,5 @@
+from app.services.file_service import FileService
+from app.utils.add_sample_rewards import add_sample_rewards
 from datetime import datetime
 from app.database.db_connection import db
 import logging
@@ -113,9 +115,15 @@ def init_database():
             ('referral_points', 50, 'Points for referral')
             ON CONFLICT (setting_name) DO NOTHING
         """)
+
+        # Add sample rewards
+        add_sample_rewards()
+
+        # Create sample PDF files
+        FileService.create_sample_pdf_files()
         
         conn.commit()
-        cursor.close()
+        cursor.close()        
         logger.info("✅ Database tables recreated successfully")
         
     except Exception as e:
