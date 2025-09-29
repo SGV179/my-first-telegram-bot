@@ -7,18 +7,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 def init_database():
-    """Initialize database tables"""
+    """Initialize database tables if they don't exist"""
     try:
         conn = db.get_connection()
         cursor = conn.cursor()
         
-        # Drop existing tables to recreate them
-        cursor.execute("DROP TABLE IF EXISTS user_rewards CASCADE")
-        cursor.execute("DROP TABLE IF EXISTS points_transactions CASCADE")
-        cursor.execute("DROP TABLE IF EXISTS activity_logs CASCADE")
-        cursor.execute("DROP TABLE IF EXISTS rewards CASCADE")
-        cursor.execute("DROP TABLE IF EXISTS loyalty_settings CASCADE")
-        cursor.execute("DROP TABLE IF EXISTS users CASCADE")
+        # Check if users table exists
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'users'
+            )
+        """)
+        tables_exist = cursor.fetchone()[0]
+        
+        if tables_exist:
+            logger.info("✅ Database tables already exist")
+            cursor.close()
+            return
         
         # Users table
         cursor.execute("""
@@ -115,18 +122,37 @@ def init_database():
             ('referral_points', 50, 'Points for referral')
             ON CONFLICT (setting_name) DO NOTHING
         """)
-
-        # Add sample rewards
-        add_sample_rewards()
-
-        # Create sample PDF files
-        FileService.create_sample_pdf_files()
+        
+        # Add sample rewards only if they don't exist
+        cursor.execute("SELECT COUNT(*) FROM rewards")
+        rewards_count = cursor.fetchone()[0]
+        
+        if rewards_count == 0:
+            sample_rewards = [
+                ('📚 Электронная книга "Основы инвестирования"', 'Подробное руководство для начинающих инвесторов с примерами и стратегиями', 50, 'sample_investment_guide'),
+                ('🎓 Видео-курс "Финансовая грамотность"', '5 уроков по управлению личными финансами и планированию бюджета', 100, 'sample_financial_course'),
+                ('📊 Шаблон Excel для учета финансов', 'Удобный шаблон для отслеживания доходов и расходов с автоматическими отчетами', 30, 'sample_excel_template'),
+                ('💼 Консультация с экспертом', '30-минутная онлайн-консультация по вопросам инвестиций и финансового планирования', 200, None),
+                ('📈 Доступ к эксклюзивным материалам', 'Закрытые аналитические отчеты и прогнозы рынка', 150, 'sample_exclusive_reports')
+            ]
+            
+            for reward in sample_rewards:
+                cursor.execute("""
+                    INSERT INTO rewards (title, description, cost_points, pdf_file_id)
+                    VALUES (%s, %s, %s, %s)
+                """, reward)
+            
+            logger.info("✅ Sample rewards added")
         
         conn.commit()
-        cursor.close()        
-        logger.info("✅ Database tables recreated successfully")
+        cursor.close()
+        
+        # Create sample PDF files
+        from app.services.file_service import FileService
+        FileService.create_sample_pdf_files()
+        
+        logger.info("✅ Database tables initialized successfully")
         
     except Exception as e:
-        logger.error(f"❌ Error recreating database tables: {e}")
+        logger.error(f"❌ Error initializing database: {e}")
         raise
-
