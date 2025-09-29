@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -14,6 +14,8 @@ from app.services.channel_service import ChannelService
 from app.handlers.user_handlers import router as user_router
 from app.handlers.rewards_handlers import router as rewards_router
 from app.handlers.admin_handlers import router as admin_router
+from app.handlers.activity_handlers import router as activity_router
+from app.handlers.manual_activity_handlers import router as manual_activity_router
 from app.utils.logger import logger
 
 async def main():
@@ -41,9 +43,13 @@ async def main():
 
         # Register handlers
         dp.message.register(start_handler, CommandStart())
+        
+        # Include all routers
         dp.include_router(user_router)
         dp.include_router(rewards_router)
         dp.include_router(admin_router)
+        dp.include_router(activity_router)
+        dp.include_router(manual_activity_router)
 
         # Start polling
         logger.info("🚀 Bot is starting...")
@@ -93,6 +99,8 @@ async def start_handler(message: Message):
 💡 Используйте команды:
 /points - ваши баллы
 /profile - ваш профиль
+/activities - ваши активности
+/quick_activities - быстрое добавление активностей
 /check_subscription - проверить подписку
 /rewards - доступные награды
 /my_rewards - ваши покупки
@@ -106,7 +114,8 @@ async def start_handler(message: Message):
 
             # Show admin panel link for admins
             if user.id in config.ADMIN_IDS:
-                welcome_text += f"\n\n🛠️ *Панель администратора:* /admin"
+                welcome_text += f"\n\n🛠️ Панель администратора: /admin"
+                welcome_text += f"\n📊 Статистика активностей: /activity_stats"
 
             await message.answer(welcome_text)
         else:
