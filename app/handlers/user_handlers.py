@@ -1,4 +1,5 @@
 import logging
+from app.services.channel_service import ChannelService
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -65,6 +66,7 @@ async def help_handler(message: Message):
 /start - Начать работу с ботом
 /points - Показать ваши баллы
 /profile - Показать ваш профиль
+/check_subscription - Проверить подписку на каналы
 /rewards - Показать доступные награды
 /help - Показать эту справку
 
@@ -81,3 +83,15 @@ async def help_handler(message: Message):
     
     await message.answer(help_text)
 
+@router.message(Command("check_subscription"))
+async def check_subscription_handler(message: Message):
+    """Check user subscription status"""
+    try:
+        user_id = message.from_user.id
+        result = await ChannelService.require_subscription(message.bot, user_id)
+        
+        await message.answer(result)
+        
+    except Exception as e:
+        logger.error(f"❌ Error in check_subscription handler: {e}")
+        await message.answer("❌ Произошла ошибка при проверке подписки")

@@ -9,6 +9,7 @@ from app.database.db_connection import db
 from app.models.database_models import init_database
 from app.services.user_service import UserService
 from app.services.points_service import PointsService
+from app.services.channel_service import ChannelService
 from app.handlers.user_handlers import router as user_router
 from app.utils.logger import logger
 
@@ -69,9 +70,9 @@ async def start_handler(message: Message):
                 bot_subscribed=True
             )
 
-            # Check channel subscriptions and give welcome points if eligible
-            welcome_points = UserService.give_welcome_points(user.id)
-
+            # Check channel subscriptions
+            subscription_result = await ChannelService.check_user_subscription(message.bot, user.id)
+            
             welcome_text = f"""
 👋 Добро пожаловать, {user.first_name}!
 
@@ -79,21 +80,22 @@ async def start_handler(message: Message):
 
 📊 Ваши баллы: {PointsService.get_user_points(user.id)}
 
-🎁 За подписку на оба канала вы получаете приветственные баллы!
-
-📺 Обязательно подпишитесь на наши каналы:
-{config.CHANNEL_1}
-{config.CHANNEL_2}
+📺 Статус подписки:
+{config.CHANNEL_1}: {'✅' if subscription_result['channel_1'] else '❌'}
+{config.CHANNEL_2}: {'✅' if subscription_result['channel_2'] else '❌'}
 
 💡 Используйте команды:
 /points - ваши баллы
 /profile - ваш профиль
+/check_subscription - проверить подписку
 /rewards - доступные награды
 /help - справка по командам
             """
 
-            if welcome_points > 0:
-                welcome_text += f"\n🎉 Вам начислено {welcome_points} приветственных баллов!"
+            if subscription_result['welcome_points'] > 0:
+                welcome_text += f"\n🎉 Вам начислено {subscription_result['welcome_points']} приветственных баллов!"
+            elif not subscription_result['subscribed']:
+                welcome_text += f"\n\n📋 Для получения приветственных баллов подпишитесь на оба канала выше!"
 
             await message.answer(welcome_text)
         else:
@@ -105,4 +107,3 @@ async def start_handler(message: Message):
 
 if __name__ == "__main__":
     asyncio.run(main())
-
