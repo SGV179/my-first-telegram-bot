@@ -8,8 +8,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.utils import executor
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
+from datetime import datetime, timedelta
 
-from models import Base, Reward, User, Transaction
+from models import Base, Reward, User, Transaction, Activity, UserActivity
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +39,9 @@ class AdminStates(StatesGroup):
     waiting_for_reward_points = State()
     waiting_for_reward_edit = State()
     waiting_for_reward_edit_points = State()
+    waiting_for_activity_title = State()
+    waiting_for_activity_points = State()
+    waiting_for_activity_cooldown = State()
 
 # Вспомогательные функции
 def get_or_create_user(user_id, username=None, first_name=None, last_name=None):
@@ -59,7 +63,7 @@ def get_user_balance(user_id):
     user = db_session.query(User).filter(User.user_id == user_id).first()
     return user.points if user else 0
 
-def create_transaction(user_id, reward_id, points_change, transaction_type):
+def create_transaction(user_id, reward_id, points_change, transaction_type, description=None):
     """Создает запись о транзакции"""
     user = db_session.query(User).filter(User.user_id == user_id).first()
     if user:
@@ -67,7 +71,8 @@ def create_transaction(user_id, reward_id, points_change, transaction_type):
             user_id=user.id,
             reward_id=reward_id,
             points_change=points_change,
-            transaction_type=transaction_type
+            transaction_type=transaction_type,
+            description=description
         )
         db_session.add(transaction)
         
@@ -77,11 +82,47 @@ def create_transaction(user_id, reward_id, points_change, transaction_type):
         return True
     return False
 
+def can_complete_activity(user_id, activity_id):
+    """Проверяет, может ли пользователь выполнить активность"""
+    user = db_session.query(User).filter(User.user_id == user_id).first()
+    activity = db_session.query(Activity).filter(Activity.id == activity_id).first()
+    
+    if not user or not activity or not activity.is_active:
+        return False, "Активность недоступна"
+    
+    # Проверяем максимальное количество выполнений
+    if activity.max_completions > 0:
+        completions_count = db_session.query(UserActivity).filter(
+            UserActivity.user_id == user.id,
+            UserActivity.activity_id == activity.id
+        ).count()
+        
+        if completions_count >= activity.max_completions:
+            return False, f"Достигнут лимит выполнений ({activity.max_completions})"
+    
+    # Проверяем кулдаун
+    if activity.cooldown_hours > 0:
+        last_completion = db_session.query(UserActivity).filter(
+            UserActivity.user_id == user.id,
+            UserActivity.activity_id == activity.id
+        ).order_by(UserActivity.completed_at.desc()).first()
+        
+        if last_completion:
+            cooldown_end = last_completion.completed_at + timedelta(hours=activity.cooldown_hours)
+            if datetime.now() < cooldown_end:
+                time_left = cooldown_end - datetime.now()
+                hours_left = int(time_left.total_seconds() // 3600)
+                minutes_left = int((time_left.total_seconds() % 3600) // 60)
+                return False, f"Доступно через {hours_left}ч {minutes_left}м"
+    
+    return True, "Можно выполнить"
+
 # Клавиатуры
 def get_main_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.add(KeyboardButton('Мой профиль'))
     keyboard.add(KeyboardButton('Каталог наград'))
+    keyboard.add(KeyboardButton('Заработать баллы'))
     keyboard.add(KeyboardButton('Админ панель'))
     return keyboard
 
@@ -90,6 +131,14 @@ def get_admin_keyboard():
     keyboard.add(KeyboardButton('Добавить награду'))
     keyboard.add(KeyboardButton('Список наград'))
     keyboard.add(KeyboardButton('Управление наградами'))
+    keyboard.add(KeyboardButton('Управление активностями'))
+    keyboard.add(KeyboardButton('На главную'))
+    return keyboard
+
+def get_activities_keyboard():
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton('Ежедневные активности'))
+    keyboard.add(KeyboardButton('Разовые задания'))
     keyboard.add(KeyboardButton('На главную'))
     return keyboard
 
@@ -98,7 +147,6 @@ def get_rewards_keyboard(user_id):
     rewards = db_session.query(Reward).all()
     user_balance = get_user_balance(user_id)
     
-    # Берем только награды с загруженными файлами
     available_rewards = [r for r in rewards if r.file_id]
     
     for reward in available_rewards:
@@ -115,6 +163,27 @@ def get_rewards_keyboard(user_id):
             button_text,
             callback_data=callback_data
         ))
+    return keyboard
+
+def get_activities_list_keyboard(user_id):
+    keyboard = InlineKeyboardMarkup()
+    activities = db_session.query(Activity).filter(Activity.is_active == True).all()
+    
+    for activity in activities:
+        can_complete, message = can_complete_activity(user_id, activity.id)
+        status_icon = "✅" if can_complete else "⏳"
+        
+        button_text = f"{status_icon} {activity.title} - {activity.points_reward} баллов"
+        if len(button_text) > 50:
+            button_text = f"{status_icon} {activity.title[:47]}..."
+        
+        callback_data = f"complete_activity_{activity.id}" if can_complete else f"activity_info_{activity.id}"
+        
+        keyboard.add(InlineKeyboardButton(
+            button_text,
+            callback_data=callback_data
+        ))
+    
     return keyboard
 
 def get_manage_rewards_keyboard():
@@ -144,9 +213,87 @@ def get_manage_rewards_keyboard():
     keyboard.add(InlineKeyboardButton("Назад в админку", callback_data="back_to_admin"))
     return keyboard
 
+def get_manage_activities_keyboard():
+    keyboard = InlineKeyboardMarkup()
+    activities = db_session.query(Activity).all()
+    
+    for activity in activities:
+        status = "✅" if activity.is_active else "❌"
+        button_text = f"{status} {activity.title}"
+        if len(button_text) > 30:
+            button_text = f"{status} {activity.title[:27]}..."
+        
+        keyboard.row(
+            InlineKeyboardButton(
+                button_text,
+                callback_data=f"view_activity_{activity.id}"
+            ),
+            InlineKeyboardButton(
+                "✏️",
+                callback_data=f"edit_activity_{activity.id}"
+            ),
+            InlineKeyboardButton(
+                "❌", 
+                callback_data=f"delete_activity_{activity.id}"
+            )
+        )
+    
+    keyboard.add(InlineKeyboardButton("Добавить активность", callback_data="add_activity"))
+    keyboard.add(InlineKeyboardButton("Назад в админку", callback_data="back_to_admin"))
+    return keyboard
+
+# Инициализация активностей
+def initialize_activities():
+    """Создает начальные активности, если их нет"""
+    existing_activities = db_session.query(Activity).count()
+    if existing_activities == 0:
+        initial_activities = [
+            {
+                "title": "Ежедневный вход",
+                "description": "Зайдите в бота сегодня",
+                "points_reward": 5,
+                "cooldown_hours": 24,
+                "max_completions": 0
+            },
+            {
+                "title": "Просмотр каталога наград",
+                "description": "Откройте раздел с наградами",
+                "points_reward": 3,
+                "cooldown_hours": 6,
+                "max_completions": 0
+            },
+            {
+                "title": "Первый визит",
+                "description": "Впервые зашли в бота",
+                "points_reward": 10,
+                "cooldown_hours": 0,
+                "max_completions": 1
+            },
+            {
+                "title": "Изучение профиля",
+                "description": "Посмотрите свой профиль",
+                "points_reward": 2,
+                "cooldown_hours": 12,
+                "max_completions": 0
+            }
+        ]
+        
+        for activity_data in initial_activities:
+            activity = Activity(
+                title=activity_data["title"],
+                description=activity_data["description"],
+                points_reward=activity_data["points_reward"],
+                cooldown_hours=activity_data["cooldown_hours"],
+                max_completions=activity_data["max_completions"]
+            )
+            db_session.add(activity)
+        
+        db_session.commit()
+        logging.info("Initial activities added to database")
+
 # Очистка базы от дубликатов
 def cleanup_duplicates():
-    """Удаляет дубликаты наград по названию, оставляя только последнюю версию"""
+    """Удаляет дубликаты наград по названию"""
     try:
         all_rewards = db_session.query(Reward).all()
         unique_titles = {}
@@ -203,13 +350,30 @@ def initialize_rewards():
 # Обработчики команд
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    # Создаем/получаем пользователя
     user = get_or_create_user(
         user_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name
     )
+    
+    # Автоматически начисляем баллы за первый визит
+    first_visit_activity = db_session.query(Activity).filter(Activity.title == "Первый визит").first()
+    if first_visit_activity:
+        can_complete, _ = can_complete_activity(message.from_user.id, first_visit_activity.id)
+        if can_complete:
+            user_activity = UserActivity(
+                user_id=user.id,
+                activity_id=first_visit_activity.id
+            )
+            db_session.add(user_activity)
+            create_transaction(
+                user_id=message.from_user.id,
+                reward_id=None,
+                points_change=first_visit_activity.points_reward,
+                transaction_type="activity",
+                description=f"Начисление за: {first_visit_activity.title}"
+            )
     
     await message.answer(
         f"Добро пожаловать в бот, {message.from_user.first_name}!\n\n"
@@ -224,16 +388,70 @@ async def cmd_main_menu(message: types.Message):
 @dp.message_handler(lambda message: message.text == 'Мой профиль')
 async def cmd_profile(message: types.Message):
     user = get_or_create_user(message.from_user.id)
+    
+    # Начисляем баллы за просмотр профиля
+    profile_activity = db_session.query(Activity).filter(Activity.title == "Изучение профиля").first()
+    if profile_activity:
+        can_complete, _ = can_complete_activity(message.from_user.id, profile_activity.id)
+        if can_complete:
+            user_activity = UserActivity(
+                user_id=user.id,
+                activity_id=profile_activity.id
+            )
+            db_session.add(user_activity)
+            create_transaction(
+                user_id=message.from_user.id,
+                reward_id=None,
+                points_change=profile_activity.points_reward,
+                transaction_type="activity",
+                description=f"Начисление за: {profile_activity.title}"
+            )
+            profile_bonus = f"\n🎉 +{profile_activity.points_reward} баллов за изучение профиля!"
+        else:
+            profile_bonus = ""
+    else:
+        profile_bonus = ""
+    
+    # Получаем историю последних операций
+    recent_transactions = db_session.query(Transaction).filter(
+        Transaction.user_id == user.id
+    ).order_by(Transaction.created_at.desc()).limit(5).all()
+    
+    transactions_text = "\n📊 Последние операции:\n"
+    for transaction in recent_transactions:
+        sign = "+" if transaction.points_change > 0 else ""
+        transactions_text += f"  {sign}{transaction.points_change} баллов - {transaction.description or transaction.transaction_type}\n"
+    
     await message.answer(
         f"👤 Ваш профиль:\n\n"
         f"Имя: {message.from_user.first_name or 'Не указано'}\n"
         f"Username: @{message.from_user.username or 'Не указан'}\n"
-        f"Баланс: {user.points} баллов\n\n"
+        f"Баланс: {user.points} баллов{profile_bonus}\n"
+        f"{transactions_text}\n"
         f"Используйте баллы для получения полезных материалов!"
     )
 
 @dp.message_handler(lambda message: message.text == 'Каталог наград')
 async def cmd_rewards_catalog(message: types.Message):
+    # Начисляем баллы за просмотр каталога
+    catalog_activity = db_session.query(Activity).filter(Activity.title == "Просмотр каталога наград").first()
+    if catalog_activity:
+        can_complete, _ = can_complete_activity(message.from_user.id, catalog_activity.id)
+        if can_complete:
+            user = get_or_create_user(message.from_user.id)
+            user_activity = UserActivity(
+                user_id=user.id,
+                activity_id=catalog_activity.id
+            )
+            db_session.add(user_activity)
+            create_transaction(
+                user_id=message.from_user.id,
+                reward_id=None,
+                points_change=catalog_activity.points_reward,
+                transaction_type="activity",
+                description=f"Начисление за: {catalog_activity.title}"
+            )
+    
     rewards = db_session.query(Reward).all()
     available_rewards = [r for r in rewards if r.file_id]
     user_balance = get_user_balance(message.from_user.id)
@@ -251,6 +469,67 @@ async def cmd_rewards_catalog(message: types.Message):
     text += "Выберите награду для получения:"
     await message.answer(text, reply_markup=get_rewards_keyboard(message.from_user.id))
 
+@dp.message_handler(lambda message: message.text == 'Заработать баллы')
+async def cmd_earn_points(message: types.Message):
+    user_balance = get_user_balance(message.from_user.id)
+    
+    text = (
+        f"💎 Заработать баллы\n\n"
+        f"Ваш текущий баланс: {user_balance} баллов\n\n"
+        f"Выполняйте активности и задания, чтобы получать баллы!\n\n"
+        f"Выберите тип активностей:"
+    )
+    
+    await message.answer(text, reply_markup=get_activities_keyboard())
+
+@dp.message_handler(lambda message: message.text == 'Ежедневные активности')
+async def cmd_daily_activities(message: types.Message):
+    activities = db_session.query(Activity).filter(
+        Activity.is_active == True,
+        Activity.cooldown_hours > 0
+    ).all()
+    
+    if not activities:
+        await message.answer("Пока нет ежедневных активностей.")
+        return
+    
+    text = "📅 Ежедневные активности:\n\n"
+    for activity in activities:
+        can_complete, message_text = can_complete_activity(message.from_user.id, activity.id)
+        status = "✅ Доступно" if can_complete else f"⏳ {message_text}"
+        text += f"• {activity.title}\n  Награда: {activity.points_reward} баллов\n  {status}\n\n"
+    
+    text += "Выберите активность для выполнения:"
+    await message.answer(text, reply_markup=get_activities_list_keyboard(message.from_user.id))
+
+@dp.message_handler(lambda message: message.text == 'Разовые задания')
+async def cmd_one_time_activities(message: types.Message):
+    activities = db_session.query(Activity).filter(
+        Activity.is_active == True,
+        Activity.max_completions > 0
+    ).all()
+    
+    if not activities:
+        await message.answer("Пока нет разовых заданий.")
+        return
+    
+    text = "🎯 Разовые задания:\n\n"
+    for activity in activities:
+        can_complete, message_text = can_complete_activity(message.from_user.id, activity.id)
+        user = get_or_create_user(message.from_user.id)
+        completions_count = db_session.query(UserActivity).filter(
+            UserActivity.user_id == user.id,
+            UserActivity.activity_id == activity.id
+        ).count()
+        
+        status = "✅ Доступно" if can_complete else f"❌ {message_text}"
+        progress = f" ({completions_count}/{activity.max_completions})"
+        
+        text += f"• {activity.title}{progress}\n  Награда: {activity.points_reward} баллов\n  {status}\n\n"
+    
+    text += "Выберите задание для выполнения:"
+    await message.answer(text, reply_markup=get_activities_list_keyboard(message.from_user.id))
+
 @dp.message_handler(lambda message: message.text == 'Админ панель')
 async def cmd_admin_panel(message: types.Message):
     await message.answer(
@@ -259,6 +538,7 @@ async def cmd_admin_panel(message: types.Message):
         reply_markup=get_admin_keyboard()
     )
 
+# Админские команды
 @dp.message_handler(lambda message: message.text == 'Добавить награду')
 async def cmd_add_reward(message: types.Message):
     await message.answer("Пожалуйста, отправьте PDF файл для новой награды:")
@@ -286,6 +566,14 @@ async def cmd_manage_rewards(message: types.Message):
         reply_markup=get_manage_rewards_keyboard()
     )
 
+@dp.message_handler(lambda message: message.text == 'Управление активностями')
+async def cmd_manage_activities(message: types.Message):
+    await message.answer(
+        "🎯 Управление активностями:\n\n"
+        "Выберите активность для редактирования:",
+        reply_markup=get_manage_activities_keyboard()
+    )
+
 # Обработка callback'ов для наград
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('reward_'))
 async def process_reward_callback(callback_query: types.CallbackQuery):
@@ -301,18 +589,17 @@ async def process_reward_callback(callback_query: types.CallbackQuery):
         await callback_query.answer("Файл для этой награды еще не загружен")
         return
     
-    # Проверяем достаточно ли баллов
     if user_balance < reward.points_cost:
         await callback_query.answer(f"Недостаточно баллов! Нужно {reward.points_cost}, у вас {user_balance}")
         return
     
     try:
-        # Списываем баллы
         if create_transaction(
             user_id=callback_query.from_user.id,
             reward_id=reward.id,
             points_change=-reward.points_cost,
-            transaction_type="purchase"
+            transaction_type="purchase",
+            description=f"Покупка: {reward.title}"
         ):
             await bot.send_document(
                 callback_query.from_user.id,
@@ -329,6 +616,77 @@ async def process_reward_callback(callback_query: types.CallbackQuery):
         await callback_query.answer("Ошибка при отправке файла")
         logging.error(f"Error sending file: {e}")
 
+# Обработка callback'ов для активностей
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_activity_'))
+async def process_complete_activity(callback_query: types.CallbackQuery):
+    activity_id = int(callback_query.data.split('_')[2])
+    activity = db_session.query(Activity).filter(Activity.id == activity_id).first()
+    user = get_or_create_user(callback_query.from_user.id)
+    
+    if not activity:
+        await callback_query.answer("Активность не найдена")
+        return
+    
+    can_complete, message = can_complete_activity(callback_query.from_user.id, activity_id)
+    
+    if can_complete:
+        # Записываем выполнение активности
+        user_activity = UserActivity(
+            user_id=user.id,
+            activity_id=activity.id
+        )
+        db_session.add(user_activity)
+        
+        # Начисляем баллы
+        create_transaction(
+            user_id=callback_query.from_user.id,
+            reward_id=None,
+            points_change=activity.points_reward,
+            transaction_type="activity",
+            description=f"Начисление за: {activity.title}"
+        )
+        
+        await callback_query.answer(f"🎉 +{activity.points_reward} баллов за выполнение задания!")
+        await callback_query.message.answer(
+            f"✅ Задание выполнено!\n\n"
+            f"Активность: {activity.title}\n"
+            f"Начислено: {activity.points_reward} баллов\n"
+            f"Новый баланс: {get_user_balance(callback_query.from_user.id)} баллов"
+        )
+    else:
+        await callback_query.answer(message)
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('activity_info_'))
+async def process_activity_info(callback_query: types.CallbackQuery):
+    activity_id = int(callback_query.data.split('_')[2])
+    activity = db_session.query(Activity).filter(Activity.id == activity_id).first()
+    
+    if activity:
+        can_complete, message = can_complete_activity(callback_query.from_user.id, activity_id)
+        
+        text = (
+            f"📋 Информация об активности:\n\n"
+            f"Название: {activity.title}\n"
+            f"Описание: {activity.description}\n"
+            f"Награда: {activity.points_reward} баллов\n"
+            f"Статус: {message}\n"
+        )
+        
+        if activity.cooldown_hours > 0:
+            text += f"Кулдаун: {activity.cooldown_hours} часов\n"
+        
+        if activity.max_completions > 0:
+            user = get_or_create_user(callback_query.from_user.id)
+            completions_count = db_session.query(UserActivity).filter(
+                UserActivity.user_id == user.id,
+                UserActivity.activity_id == activity.id
+            ).count()
+            text += f"Выполнено: {completions_count}/{activity.max_completions}"
+        
+        await callback_query.message.answer(text)
+    
+    await callback_query.answer()
+
 @dp.callback_query_handler(lambda c: c.data == 'not_enough_points')
 async def process_not_enough_points(callback_query: types.CallbackQuery):
     user_balance = get_user_balance(callback_query.from_user.id)
@@ -342,7 +700,6 @@ async def process_view_reward(callback_query: types.CallbackQuery):
     
     if reward:
         status = "✅ Файл загружен" if reward.file_id else "❌ Файл отсутствует"
-        # Считаем сколько раз награду покупали
         purchase_count = db_session.query(Transaction).filter(
             Transaction.reward_id == reward.id,
             Transaction.transaction_type == "purchase"
@@ -382,6 +739,34 @@ async def process_delete_reward(callback_query: types.CallbackQuery):
         await callback_query.message.answer(f"Награда '{reward.title}' удалена!")
     else:
         await callback_query.message.answer("Награда не найдена")
+    await callback_query.answer()
+
+# Обработка управления активностями
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_activity_'))
+async def process_view_activity(callback_query: types.CallbackQuery):
+    activity_id = int(callback_query.data.split('_')[2])
+    activity = db_session.query(Activity).filter(Activity.id == activity_id).first()
+    
+    if activity:
+        completions_count = db_session.query(UserActivity).filter(
+            UserActivity.activity_id == activity.id
+        ).count()
+        
+        text = (f"📊 Информация об активности:\n\n"
+               f"Название: {activity.title}\n"
+               f"Описание: {activity.description}\n"
+               f"Награда: {activity.points_reward} баллов\n"
+               f"Кулдаун: {activity.cooldown_hours} часов\n"
+               f"Макс. выполнений: {activity.max_completions if activity.max_completions > 0 else 'Без ограничений'}\n"
+               f"Статус: {'✅ Активна' if activity.is_active else '❌ Неактивна'}\n"
+               f"Выполнено раз: {completions_count}")
+        await callback_query.message.answer(text)
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == 'add_activity')
+async def process_add_activity(callback_query: types.CallbackQuery):
+    await callback_query.message.answer("Введите название новой активности:")
+    await AdminStates.waiting_for_activity_title.set()
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data == 'back_to_admin')
@@ -461,9 +846,81 @@ async def process_edit_reward_points(message: types.Message, state: FSMContext):
     
     await state.finish()
 
+# Обработка добавления активностей
+@dp.message_handler(state=AdminStates.waiting_for_activity_title)
+async def process_activity_title(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['title'] = message.text
+    
+    await message.answer("Введите описание активности:")
+    await AdminStates.waiting_for_activity_points.set()
+
+@dp.message_handler(state=AdminStates.waiting_for_activity_points)
+async def process_activity_points(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['description'] = message.text
+    
+    await message.answer("Введите количество баллов за выполнение:")
+    await AdminStates.waiting_for_activity_cooldown.set()
+
+@dp.message_handler(state=AdminStates.waiting_for_activity_cooldown)
+async def process_activity_cooldown(message: types.Message, state: FSMContext):
+    try:
+        points = int(message.text)
+        if points <= 0:
+            await message.answer("Количество баллов должно быть положительным числом. Попробуйте еще раз:")
+            return
+    except ValueError:
+        await message.answer("Пожалуйста, введите число. Попробуйте еще раз:")
+        return
+    
+    async with state.proxy() as data:
+        data['points_reward'] = points
+    
+    await message.answer(
+        "Введите время ожидания между выполнениями (в часах):\n"
+        "0 - без ограничений\n"
+        "24 - раз в сутки\n"
+        "168 - раз в неделю"
+    )
+    
+    # Сохраняем данные и переходим к следующему шагу
+    await state.update_data(points_reward=points)
+
+@dp.message_handler(state=AdminStates.waiting_for_activity_cooldown)
+async def process_activity_final(message: types.Message, state: FSMContext):
+    try:
+        cooldown = int(message.text)
+        if cooldown < 0:
+            await message.answer("Время ожидания не может быть отрицательным. Попробуйте еще раз:")
+            return
+    except ValueError:
+        await message.answer("Пожалуйста, введите число. Попробуйте еще раз:")
+        return
+    
+    async with state.proxy() as data:
+        activity = Activity(
+            title=data['title'],
+            description=data['description'],
+            points_reward=data['points_reward'],
+            cooldown_hours=cooldown,
+            max_completions=0  # По умолчанию без ограничений
+        )
+        
+        db_session.add(activity)
+        db_session.commit()
+    
+    await message.answer(
+        f"Активность '{data['title']}' успешно добавлена!\n\n"
+        f"Награда: {data['points_reward']} баллов\n"
+        f"Кулдаун: {cooldown} часов"
+    )
+    await state.finish()
+
 if __name__ == '__main__':
-    # Инициализируем начальные награды
+    # Инициализируем начальные награды и активности
     initialize_rewards()
+    initialize_activities()
     
     # Запускаем бота
     logging.info("Bot starting...")

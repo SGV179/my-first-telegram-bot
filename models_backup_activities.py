@@ -1,7 +1,7 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime, date
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -19,8 +19,6 @@ class User(Base):
     
     # Связь с историей операций
     transactions = relationship("Transaction", back_populates="user")
-    # Связь с выполненными активностями
-    completed_activities = relationship("UserActivity", back_populates="user")
     
     def __repr__(self):
         return f"User(id={self.id}, user_id={self.user_id}, points={self.points})"
@@ -49,8 +47,7 @@ class Transaction(Base):
     user_id = Column(Integer, ForeignKey('users.id'))
     reward_id = Column(Integer, ForeignKey('rewards.id'))
     points_change = Column(Integer, nullable=False)  # Отрицательное для списания
-    transaction_type = Column(String(50), nullable=False)  # 'purchase', 'reward', 'activity'
-    description = Column(Text)  # Описание операции
+    transaction_type = Column(String(50), nullable=False)  # 'purchase', 'reward', etc.
     created_at = Column(DateTime, default=datetime.now)
     
     # Связи
@@ -59,36 +56,3 @@ class Transaction(Base):
     
     def __repr__(self):
         return f"Transaction(id={self.id}, user_id={self.user_id}, points_change={self.points_change})"
-
-class Activity(Base):
-    __tablename__ = 'activities'
-    
-    id = Column(Integer, primary_key=True)
-    title = Column(String(255), nullable=False)
-    description = Column(Text)
-    points_reward = Column(Integer, nullable=False)  # Награда в баллах
-    cooldown_hours = Column(Integer, default=0)  # Время ожидания между выполнениями (в часах)
-    max_completions = Column(Integer, default=0)  # Максимальное количество выполнений (0 = без ограничений)
-    is_active = Column(Boolean, default=True)  # Активна ли активность
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Связь с выполненными активностями
-    user_activities = relationship("UserActivity", back_populates="activity")
-    
-    def __repr__(self):
-        return f"Activity(id={self.id}, title='{self.title}', points_reward={self.points_reward})"
-
-class UserActivity(Base):
-    __tablename__ = 'user_activities'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    activity_id = Column(Integer, ForeignKey('activities.id'))
-    completed_at = Column(DateTime, default=datetime.now)
-    
-    # Связи
-    user = relationship("User", back_populates="completed_activities")
-    activity = relationship("Activity", back_populates="user_activities")
-    
-    def __repr__(self):
-        return f"UserActivity(id={self.id}, user_id={self.user_id}, activity_id={self.activity_id})"
