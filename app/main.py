@@ -9,6 +9,7 @@ from app.database.db_connection import db
 from app.models.database_models import init_database
 from app.services.user_service import UserService
 from app.services.points_service import PointsService
+from app.handlers.user_handlers import router as user_router
 from app.utils.logger import logger
 
 async def main():
@@ -35,6 +36,7 @@ async def main():
 
         # Register handlers
         dp.message.register(start_handler, CommandStart())
+        dp.include_router(user_router)
 
         # Start polling
         logger.info("🚀 Bot is starting...")
@@ -87,6 +89,7 @@ async def start_handler(message: Message):
 /points - ваши баллы
 /profile - ваш профиль
 /rewards - доступные награды
+/help - справка по командам
             """
 
             if welcome_points > 0:
@@ -102,3 +105,4 @@ async def start_handler(message: Message):
 
 if __name__ == "__main__":
     asyncio.run(main())
+
