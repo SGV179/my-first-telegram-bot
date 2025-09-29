@@ -1,0 +1,27 @@
+from database.connections import create_tables, get_db
+from services.analytics import AnalyticsService
+
+def test_analytics():
+    # Создаем таблицы
+    create_tables()
+    print("✅ Таблицы созданы")
+    
+    # Тестируем сервис аналитики
+    db = next(get_db())
+    analytics = AnalyticsService(db)
+    
+    # Тестовое событие
+    event = analytics.track_event(
+        user_id=1,  # тестовый ID
+        event_type="subscribe",
+        channel_id=-1002581031645,  # ваш канал
+        event_data={"source": "bot"}
+    )
+    print(f"✅ Событие записано: {event.id}")
+    
+    # Тест статистики
+    stats = analytics.get_channel_stats(-1002581031645)
+    print(f"✅ Статистика канала: {stats}")
+
+if __name__ == "__main__":
+    test_analytics()
